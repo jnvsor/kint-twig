@@ -214,8 +214,14 @@ class TwigExtension extends AbstractExtension
             }
         }
 
-        $callee = \reset($miniTrace) ?: null;
-        $caller = \next($miniTrace) ?: null;
+        $callee = \reset($miniTrace);
+        if (!(bool) $callee) {
+            $callee = null;
+        }
+        $caller = \next($miniTrace);
+        if (!(bool) $caller) {
+            $caller = null;
+        }
 
         foreach ($miniTrace as $index => $frame) {
             if ((0 === $index && $callee === $frame) || isset($frame['file'], $frame['line'])) {
