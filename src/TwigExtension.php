@@ -26,10 +26,16 @@ use Kint\Kint;
 use Kint\Parser\Parser;
 use Kint\Renderer\PlainRenderer;
 use Kint\Renderer\RichRenderer;
+use Kint\Utils;
 use Kint\Value\Context\BaseContext;
+use ReflectionObject;
 use Twig\Environment;
 use Twig\Extension\AbstractExtension;
+use Twig\Source;
+use Twig\Template;
 use Twig\TwigFunction;
+use TypeError;
+use ValueError;
 
 /** @psalm-api */
 class TwigExtension extends AbstractExtension
@@ -44,8 +50,6 @@ class TwigExtension extends AbstractExtension
             $this->aliases = $aliases;
         } else {
             $statics = Kint::getStatics();
-
-            $statics['display_called_from'] = false;
 
             $rich = new Kint(new Parser(), new RichRenderer());
             $rich->setStatesFromStatics($statics);
@@ -132,6 +136,132 @@ class TwigExtension extends AbstractExtension
             }
         }
 
+        $info = $this->getCallInfo($env);
+        if (isset($info['callee']) && !isset($info['callee']['function'])) {
+            $info['callee']['function'] = $alias;
+            $info['trace'][0]['function'] = $alias;
+        }
+        $this->aliases[$alias]->getRenderer()->setCallInfo($info);
+
         return $this->aliases[$alias]->dumpAll($vars, $bases);
+    }
+
+    protected function getCallInfo(Environment $env): array
+    {
+        $trace = \debug_backtrace();
+        $miniTrace = [];
+
+        foreach ($trace as $index => $frame) {
+            // Ignore everything inside the extension
+            if (isset($frame['object']) && $frame['object'] === $this) {
+                $miniTrace = [];
+            }
+
+            $previous_frame = $trace[$index + 1] ?? null;
+            $caller_object = $previous_frame['object'] ?? null;
+            $template = null;
+            if ($caller_object instanceof Template) {
+                $r = new ReflectionObject($caller_object);
+                if (isset($frame['file'], $frame['line']) && $r->getFileName() === $frame['file']) {
+                    $template = $caller_object;
+                } else {
+                    // If this is an internal method in the base Template class skip it
+                    continue;
+                }
+            }
+
+            // If this frame is from a template
+            if ($template) {
+                // Since Twig\Template is internal we'll skip call info
+                // altogether if anything changes unexpectedly in the API
+                $source = null;
+                if (\is_callable([$caller_object, 'getSourceContext'])) {
+                    /** @psalm-suppress InternalMethod */
+                    $source = $template->getSourceContext();
+                }
+                if (!$source instanceof Source) {
+                    // @codeCoverageIgnoreStart
+                    return [
+                        'params' => null,
+                        'modifiers' => [],
+                        'callee' => null,
+                        'caller' => null,
+                        'trace' => [],
+                    ];
+                    // @codeCoverageIgnoreEnd
+                }
+
+                /**
+                 * We checked these earlier.
+                 *
+                 * @psalm-var string $frame['file']
+                 * @psalm-var int $frame['line']
+                 */
+                $lineno = $this->getTwigLineFromPhpLine($env, $source, $frame['file'], $frame['line']);
+
+                $path = $source->getPath();
+                if (!\strlen($path)) {
+                    $path = '<TWIG>:'.$source->getName();
+                }
+
+                // Construct the fake frame
+                $miniTrace[] = [
+                    'line' => $lineno,
+                    'file' => $path,
+                ];
+            } elseif (!Utils::traceFrameIsListed($frame, ['spl_autoload_call'])) {
+                $miniTrace[] = $frame;
+            }
+        }
+
+        $callee = \reset($miniTrace) ?: null;
+        $caller = \next($miniTrace) ?: null;
+
+        foreach ($miniTrace as $index => $frame) {
+            if ((0 === $index && $callee === $frame) || isset($frame['file'], $frame['line'])) {
+                unset($frame['object'], $frame['args']);
+                $miniTrace[$index] = $frame;
+            } else {
+                unset($miniTrace[$index]);
+            }
+        }
+
+        $miniTrace = \array_values($miniTrace);
+
+        return [
+            'params' => null,
+            'modifiers' => [],
+            'callee' => $callee,
+            'caller' => $caller,
+            'trace' => $miniTrace,
+        ];
+    }
+
+    protected function getTwigLineFromPhpLine(Environment $env, Source $source, string $path, int $line): ?int
+    {
+        $phpsource = false;
+
+        try {
+            // Avoid recompiling twig templates if we can
+            if (@\is_readable($path)) {
+                $phpsource = @\file_get_contents($path);
+            }
+            if (false === $phpsource) {
+                $phpsource = $env->compileSource($source);
+            }
+        } catch (TypeError|ValueError $e) {// @codeCoverageIgnore
+            // TypeError only possible in PHP 7, ValueError from 8.6+
+            return null; // @codeCoverageIgnore
+        }
+
+        // Pull the twig line number from the PHP source code
+        $lines = \explode("\n", $phpsource, $line);
+        for ($i = $line - 2; $i >= 0; --$i) {
+            if (\preg_match('%^\\W+// line (\\d+)$%', $lines[$i], $match)) {
+                return (int) $match[1];
+            }
+        }
+
+        return null; // @codeCoverageIgnore
     }
 }

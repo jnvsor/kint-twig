@@ -22,20 +22,53 @@ declare(strict_types=1);
 
 namespace Kint\Test\Twig;
 
+use FilesystemIterator;
 use Kint\Kint;
 use Kint\Parser\Parser;
 use Kint\Renderer\RichRenderer;
 use Kint\Twig\TwigExtension;
 use PHPUnit\Framework\TestCase;
+use RecursiveDirectoryIterator;
+use RecursiveIteratorIterator;
 use Twig\Environment;
 use Twig\Error\SyntaxError;
 use Twig\Loader\ArrayLoader;
+use Twig\Loader\FilesystemLoader;
 
 /**
  * @coversNothing
  */
 class TwigExtensionTest extends TestCase
 {
+    public const TWIG_CACHE_DIR = __DIR__.'/twig-cache';
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        \mkdir(self::TWIG_CACHE_DIR);
+    }
+
+    protected function tearDown(): void
+    {
+        parent::tearDown();
+
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator(self::TWIG_CACHE_DIR, FilesystemIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::CHILD_FIRST
+        );
+
+        foreach ($iterator as $file) {
+            if ($file->isDir()) {
+                \rmdir($file->getPathname());
+            } else {
+                \unlink($file->getPathname());
+            }
+        }
+
+        \rmdir(self::TWIG_CACHE_DIR);
+    }
+
     public function outputProvider()
     {
         return [
@@ -193,5 +226,59 @@ class TwigExtensionTest extends TestCase
         $ext->setAliases(['test number two' => $kintstance]);
 
         $this->assertSame($newAliases, $ext->getAliases());
+    }
+
+    public function loaderEnvironmentProvider(): array
+    {
+        $array_loader = new ArrayLoader([
+            'base.twig' => \file_get_contents(__DIR__.'/Fixtures/base.twig'),
+            'sub.twig' => \file_get_contents(__DIR__.'/Fixtures/sub.twig'),
+        ]);
+        $file_loader = new FilesystemLoader(__DIR__.'/Fixtures');
+
+        $twig_prefix = \htmlspecialchars('<TWIG>');
+        $fixture_prefix = \htmlspecialchars('<ROOT>/tests/Fixtures');
+        $func_call = '\\[d\\(\\)\\]';
+
+        return [
+            'cached array' => [
+                new Environment($array_loader, ['debug' => true, 'cache' => self::TWIG_CACHE_DIR]),
+                "%{$twig_prefix}:base.twig:5 {$func_call}.+{$twig_prefix}:base.twig:8 {$func_call}%s",
+                "%{$twig_prefix}:sub.twig:4 {$func_call}.+{$twig_prefix}:base.twig:4.+{$twig_prefix}:sub.twig:1.+{$twig_prefix}:base.twig:8 {$func_call}.+{$twig_prefix}:sub.twig:1%s",
+            ],
+            'cached files' => [
+                new Environment($file_loader, ['debug' => true, 'cache' => self::TWIG_CACHE_DIR]),
+                "%{$fixture_prefix}/base.twig:5 {$func_call}.+{$fixture_prefix}/base.twig:8 {$func_call}%s",
+                "%{$fixture_prefix}/sub.twig:4 {$func_call}.+{$fixture_prefix}/base.twig:4.+{$fixture_prefix}/sub.twig:1.+{$fixture_prefix}/base.twig:8 {$func_call}.+{$fixture_prefix}/sub.twig:1%s",
+            ],
+            'uncached array' => [
+                new Environment($array_loader, ['debug' => true]),
+                "%{$twig_prefix}:base.twig:5 {$func_call}.+{$twig_prefix}:base.twig:8 {$func_call}%s",
+                "%{$twig_prefix}:sub.twig:4 {$func_call}.+{$twig_prefix}:base.twig:4.+{$twig_prefix}:sub.twig:1.+{$twig_prefix}:base.twig:8 {$func_call}.+{$twig_prefix}:sub.twig:1%s",
+            ],
+            'uncached files' => [
+                new Environment($file_loader, ['debug' => true]),
+                "%base.twig:5 {$func_call}.+base.twig:8 {$func_call}%s",
+                "%sub.twig:4 {$func_call}.+base.twig:4.+sub.twig:1.+base.twig:8 {$func_call}.+sub.twig:1%s",
+            ],
+        ];
+    }
+
+    /**
+     * @dataProvider loaderEnvironmentProvider
+     *
+     * @covers \Kint\Twig\TwigExtension::dump
+     * @covers \Kint\Twig\TwigExtension::getCallInfo
+     * @covers \Kint\Twig\TwigExtension::getTwigLineFromPhpLine
+     */
+    public function testCallinfoTraceRewrite(Environment $twig, string $base_expect, string $sub_expect)
+    {
+        $twig->addExtension(new TwigExtension());
+
+        $output = $twig->render('base.twig', ['a' => 'a']);
+        $this->assertMatchesRegularExpression($base_expect, $output);
+
+        $output = $twig->render('sub.twig', ['a' => 'a']);
+        $this->assertMatchesRegularExpression($sub_expect, $output);
     }
 }
