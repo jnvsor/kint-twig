@@ -18,7 +18,7 @@ runs:
       with:
         path: ${{ steps.composer-cache.outputs.dir }}
         key: ${{ runner.os }}-${{ inputs.php-version < 8.1 }}-${{ inputs.twig-version }}-${{ hashFiles('./composer.lock') }}
-    - run: composer require --no-interaction --no-install twig/twig ^${{ inputs.twig-version }}
+    - run: composer require --no-interaction --no-install twig/twig ${{ inputs.twig-version }}
       shell: bash
       if: ${{ inputs.twig-version != 3 }}
     # On old versions we only run tests so strip everything else out
