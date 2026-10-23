@@ -60,6 +60,7 @@ jobs:
           - 8.3
           - 8.4
           - 8.5
+          - 8.6
         twig:
           - 2
           - 3
@@ -73,6 +74,8 @@ jobs:
           - php-versions: 8.4
             twig: 2
           - php-versions: 8.5
+            twig: 2
+          - php-versions: 8.6
             twig: 2
     steps:
       - uses: actions/checkout@v4

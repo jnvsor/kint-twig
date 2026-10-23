@@ -18,6 +18,8 @@ runs:
       with:
         path: ${{ steps.composer-cache.outputs.dir }}
         key: ${{ runner.os }}-${{ inputs.php-version < 8.1 }}-${{ inputs.twig-version }}-${{ hashFiles('./composer.lock') }}
+    - run: composer config --json policy.advisories.block false
+      shell: bash
     - run: composer require --no-interaction --no-install twig/twig ^${{ inputs.twig-version }}
       shell: bash
       if: ${{ inputs.twig-version != 3 }}
@@ -29,4 +31,6 @@ runs:
       shell: bash
       if: inputs.php-version < 8.1
     - run: composer install
+      shell: bash
+    - run: git checkout composer.json composer.lock
       shell: bash
